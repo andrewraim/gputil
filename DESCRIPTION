@@ -1,0 +1,14 @@
+Package: gputil
+Type: Package
+Title: Gaussian Process Utilities
+Version: 0.1.0
+Author: Andrew Raim
+Maintainer: Andrew Raim <andrew.raim@gmail.com>
+Description: Gibbs sampler and associated utilities to fit a basic Gaussian
+    Process regression model.
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+Imports: raim
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.2.3

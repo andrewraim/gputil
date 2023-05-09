@@ -212,11 +212,24 @@ predict.gputil_fit = function(object, K22, K21)
 	sigma2_draws = object$sigma2_hist
 	mu0_mcmc = matrix(NA, R, n0)
 
-	for (r in 1:R) {
-		sigma2 = sigma2_draws[r]
-		mu0 = K21U %*% (z / (sigma2 + lambda))
-		Sigma0 = K22 - K21U %*% (1/(sigma2 + lambda) * t(K21U))
-		mu0_mcmc[r,] = raim::r_mvnorm(1, mu0, Sigma0)
+	if (length(n0) > 1) {
+		# Multivariate normal draws
+		for (r in 1:R) {
+			sigma2 = sigma2_draws[r]
+			mu0 = K21U %*% (z / (sigma2 + lambda))
+			Sigma0 = K22 - K21U %*% (1/(sigma2 + lambda) * t(K21U))
+			mu0_mcmc[r,] = raim::r_mvnorm(1, mu0, Sigma0)
+		}
+	} else {
+		# Univariate normal draws
+		mu0 = numeric(R)
+		sigma2_0 = numeric(R)
+		for (r in 1:R) {
+			sigma2 = sigma2_draws[r]
+			mu0[r] = K21U %*% (z / (sigma2 + lambda))
+			sigma2_0[r] = K22 - K21U %*% (1/(sigma2 + lambda) * t(K21U))
+		}
+		mu0_mcmc[,1] = rnorm(R, mu0, sqrt(sigma2_0))
 	}
 
 	return(mu0_mcmc)

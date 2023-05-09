@@ -6,17 +6,19 @@ output:
   rmarkdown::html_vignette:
     number_sections: true
 vignette: >
-  %\VignetteIndexEntry{vignette}
-  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteIndexEntry{Gaussian Process Gibbs Sampler}
   %\VignetteEncoding{UTF-8}
+  %\VignetteEngine{knitr::rmarkdown}
+editor_options: 
+  chunk_output_type: console
 ---
 
 ```{r, include = FALSE}
 knitr::opts_chunk$set(
-  collapse = TRUE,
-  comment = "#>"
+	collapse = TRUE,
+	comment = "#>",
+	fig.show = "hold"
 )
-library(gputil)
 ```
 
 \renewcommand{\vec}[1]{\boldsymbol{#1}}
@@ -44,7 +46,7 @@ $$
 &y_i = f(\vec{x}_i) + \epsilon_i, \quad \epsilon_i \sim \text{N}(0, \sigma^2), \quad
 i = 1, \ldots, n, \\
 &\mu \sim \text{GP}(0, k(\cdot, \cdot)), \quad
-\sigma^2 \sim \text{IG}(a_sigma, b_sigma).
+\sigma^2 \sim \text{IG}(a_\sigma, b_\sigma).
 \end{align*}
 $$
 
@@ -283,3 +285,125 @@ $$
 = k(\vec{x}_0, \vec{x}_0) - k(\vec{x}_0, \vec{X}) \vec{U} \Diag\left(\frac{1}{\lambda_1 + \sigma^2}, \ldots, \frac{1}{\lambda_n + \sigma^2} \right) \vec{U}^\top k(\vec{X}, \vec{x}_0).
 \end{align*}
 $$
+
+# Example
+
+Here is a brief example with $\mu(x) = \sin x$. First load necessary packages
+and set a seed for reproducibility.
+
+```{r}
+library(gputil)
+library(ggplot2)
+set.seed(1235)
+```
+
+Prepare a simulated dataset.
+
+```{r}
+mu_true = sin
+sigma2_true = 0.05^2
+n = 50
+x = seq(-4*pi, 4*pi, length.out = n)
+X = matrix(x)
+muX_true = mu_true(X)
+y = rnorm(n, muX_true, sqrt(sigma2_true))
+```
+
+Plot the dataset.
+
+```{r, fig.width=7, fig.height=4, out.width="100%"}
+dat_plot = data.frame(x = as.numeric(X), y = y)
+ggplot() +
+	geom_point(data = dat_plot, aes(x, y)) +
+	stat_function(fun = mu_true, n = 201, lty = 1) +
+	ylab("mu(x)") +
+	theme_minimal()
+```
+
+Define the squared exponential kernel function.
+
+```{r}
+covkern = function(X1, X2) {
+	exp(-plgp::distance(X1, X2))
+}
+```
+
+Run the Gibbs sampler. Note that the main inputs to the sampler are the
+observations `y` and the matrix `K` with the covariance kernel evaluated on the
+input data.
+
+```{r}
+init = get_init(n, muX = muX_true)
+fixed = get_fixed(muX = FALSE)
+prior = get_prior(a_sigma = 5, b_sigma = 10)
+control = get_control(R = 5000, report_period = 1000, save_latent = FALSE)
+
+K = covkern(X, X)
+K_eig = eigen(K)
+
+gibbs_out = gibbs(y, K_eig, init, prior, control, fixed)
+```
+
+Here is a summary of results from the sampler.
+
+```{r}
+print(gibbs_out)
+```
+
+Gather the draws of $\sigma^2$ and plot them.
+
+```{r, fig.width=7, fig.height=4, out.width="100%"}
+sigma2_mcmc = gibbs_out$sigma2_hist
+R = length(sigma2_mcmc)
+
+dat_plot = data.frame(iteration = seq_len(R), sigma2 = sigma2_mcmc)
+ggplot(dat_plot) +
+	geom_line(aes(x = iteration, y = sigma2)) +
+	theme_minimal()
+ggplot(dat_plot) +
+	geom_histogram(aes(x = sigma2), col = "black", bins = 30) +
+	theme_minimal()
+```
+
+Use the posterior draws to generate from the posterior predictive distribution.
+Our new inputs $\vec{X}_0$ are based on a finer grid on the input space.
+
+```{r}
+n0 = 200
+x0 = seq(-4*pi, 4*pi, length.out = n0)
+X0 = matrix(x0)
+
+# Draw from the marginal posterior predictive distribution for each input
+mu0_mcmc = matrix(NA, R, n0)
+for (i in 1:n0) {
+	if (i %% 50 == 0) {
+		raim::logger("Predicting input %d of %d\n", i, n0)
+	}
+	K22 = covkern(X0[i,], X0[i,])
+	K21 = covkern(X0[i,], X)
+	mu0_mcmc[,i] = predict(gibbs_out, K22, K21)
+}
+
+# Summarize with point estimates and interval bounds
+mu0_hat = apply(mu0_mcmc, 2, mean)
+mu0_lo = apply(mu0_mcmc, 2, quantile, prob = 0.025)
+mu0_hi = apply(mu0_mcmc, 2, quantile, prob = 0.975)
+```
+
+Plot predictions and associated level 95% interval, along with true $\mu(x)$
+function and noisy data.
+
+```{r, fig.width=7, fig.height=4, out.width="100%"}
+dat_plot = data.frame(x = as.numeric(X), y = y)
+dat0_plot = data.frame(x0 = x0, mu0_hat = mu0_hat, mu0_lo = mu0_lo, mu0_hi = mu0_hi)
+
+ggplot() +
+	geom_point(data = dat_plot, aes(x, y)) +
+	stat_function(fun = mu_true, n = 201, lty = 1) +
+	geom_line(data = dat0_plot, aes(x = x0, y = mu0_hat), col = "blue", linewidth = 0.8) +
+	geom_ribbon(data = dat0_plot,
+		aes(x = x0, y = mu0_hat, ymin = mu0_lo, ymax = mu0_hi),
+		fill = "blue", alpha = 0.25) +
+	ylab("mu(x)") +
+	theme_minimal()
+```

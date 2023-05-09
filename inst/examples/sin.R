@@ -3,23 +3,27 @@ library(ggplot2)
 
 set.seed(1235)
 
+# The function we want to learn through noisy observations
 mu_true = sin
 
 sigma2_true = 0.05^2
 
-n = 100
+n = 50
 x = seq(-4*pi, 4*pi, length.out = n)
 X = matrix(x)
 muX_true = mu_true(X)
 y = rnorm(n, muX_true, sqrt(sigma2_true))
 
 dat_plot = data.frame(x = as.numeric(X), y = y)
-gg = ggplot() +
+ggplot() +
 	geom_point(data = dat_plot, aes(x, y)) +
 	stat_function(fun = mu_true, n = 201, lty = 1) +
 	ylab("mu(x)") +
 	theme_minimal()
-ggsave("data.pdf", gg)
+
+covkern = function(X1, X2) {
+	exp(-plgp::distance(X1, X2))
+}
 
 # ----- Fit with sampler -----
 init = get_init(n, muX = muX_true)
@@ -27,7 +31,7 @@ fixed = get_fixed(muX = FALSE)
 prior = get_prior(a_sigma = 5, b_sigma = 10)
 control = get_control(R = 5000, report_period = 1000, save_latent = FALSE)
 
-K = exp(-plgp::distance(X,X))
+K = covkern(X, X)
 K_eig = eigen(K)
 
 gibbs_out = gibbs(y, K_eig, init, prior, control, fixed)
@@ -45,8 +49,8 @@ X0 = matrix(x0)
 
 if (FALSE) {
 	# Draw from the full joint posterior predictive distribution
-	K22 = exp(-plgp::distance(X0, X0))
-	K21 = exp(-plgp::distance(X0, X))
+	K22 = covkern(X0, X0)
+	K21 = covkern(X0, X)
 	mu0_mcmc = predict(gibbs_out, K22, K21)
 } else {
 	# Draw from the marginal posterior predictive distribution for each input
@@ -55,8 +59,8 @@ if (FALSE) {
 		if (i %% 10 == 0) {
 			raim::logger("Predicting input %d of %d\n", i, n0)
 		}
-		K22 = exp(-plgp::distance(X0[i,], X0[i,]))
-		K21 = exp(-plgp::distance(X0[i,], X))
+		K22 = covkern(X0[i,], X0[i,])
+		K21 = covkern(X0[i,], X)
 		mu0_mcmc[,i] = predict(gibbs_out, K22, K21)
 	}
 }
@@ -70,7 +74,7 @@ mu0_hi = apply(mu0_mcmc, 2, quantile, prob = 0.95)
 dat_plot = data.frame(x = as.numeric(X), y = y)
 dat0_plot = data.frame(x0 = x0, mu0_hat = mu0_hat, mu0_lo = mu0_lo, mu0_hi = mu0_hi)
 
-gg = ggplot() +
+ggplot() +
 	geom_point(data = dat_plot, aes(x, y)) +
 	stat_function(fun = mu_true, n = 201, lty = 1) +
 	geom_line(data = dat0_plot, aes(x = x0, y = mu0_hat), col = "blue", linewidth = 0.8) +
@@ -79,4 +83,3 @@ gg = ggplot() +
 		fill = "blue", alpha = 0.25) +
 	ylab("mu(x)") +
 	theme_minimal()
-ggsave("predict.pdf", gg)

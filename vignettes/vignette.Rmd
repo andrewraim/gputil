@@ -1,0 +1,285 @@
+---
+title: "Gaussian Process Gibbs Sampler"
+author: Andrew Raim
+date: 2023-05-08
+output:
+  rmarkdown::html_vignette:
+    number_sections: true
+vignette: >
+  %\VignetteIndexEntry{vignette}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r, include = FALSE}
+knitr::opts_chunk$set(
+  collapse = TRUE,
+  comment = "#>"
+)
+library(gputil)
+```
+
+\renewcommand{\vec}[1]{\boldsymbol{#1}}
+\DeclareMathOperator{\Cov}{Cov}
+\DeclareMathOperator{\Diag}{Diag}
+\newcommand{\iid}{\stackrel{\text{iid}}{\sim}}
+\newcommand{\indep}{\stackrel{\text{ind}}{\sim}}
+
+# Introduction
+
+In this package, we fit a Gaussian Process model using Gibbs sampling. First
+let us write the model. Let $\mu(\cdot) : \mathbb{R}^d \rightarrow \mathbb{R}$
+be a function that we would like to perform inference on. We may not know
+anything about it's form, but have observed data 
+$(\vec{x}_i, y_i)$, $i = 1, \ldots, n$, where $y_i$ is a noisy observation of
+$\mu(\vec{x}_i)$. Suppose $k(\cdot, \cdot)$ is a covariance kernel so that 
+$k(\vec{x}, \vec{x}') = \Cov(\mu(\vec{x}), \mu(\vec{x}'))$, but where any
+parameters are specified. An example is the squared exponential kernel
+$k(\vec{x}, \vec{x}') = \exp\{ -\frac{1}{2} \lVert \vec{x} - \vec{x}' \rVert^2 \}$.
+
+We assume the model
+
+$$
+\begin{align*}
+&y_i = f(\vec{x}_i) + \epsilon_i, \quad \epsilon_i \sim \text{N}(0, \sigma^2), \quad
+i = 1, \ldots, n, \\
+&\mu \sim \text{GP}(0, k(\cdot, \cdot)), \quad
+\sigma^2 \sim \text{IG}(a_sigma, b_sigma).
+\end{align*}
+$$
+
+With matrix/vector notation, we write the model as
+
+$$
+\begin{align*}
+&\vec{y} = \mu(\vec{X}) + \vec{\epsilon}, \quad
+\vec{\epsilon} \sim \text{N}(\vec{0}, \sigma^2 \vec{I}), \\
+&\mu(\vec{X}) \sim \text{N}(\vec{0}, k(\vec{X}, \vec{X})), \\
+&\sigma^2 \sim \text{IG}(a_\sigma, b_\sigma).
+\end{align*}
+$$
+
+where $k(\vec{X}, \vec{X})$ is an $n \times n$ matrix with $(i,j)$th element
+$k(\vec{x}_i, \vec{x}_j)$,
+$\mu(\vec{X}) = \mu(\vec{x}_1, \ldots, \vec{x}_n)$,
+$\vec{y} = (y_1, \ldots, y_n)$, and
+$\vec{\epsilon} = (\epsilon_1, \ldots, \epsilon_n)$.
+
+# Sampling from Posterior
+
+We will use a Gibbs sampler which repeats the following two steps for $R$
+iterations:
+
+1. Sample $\vec{\mu}$ from $[\mu(\vec{X}) \mid \sigma^2, \vec{y}]$,
+2. Sample $\sigma^2$ from $[\sigma^2 \mid \mu(\vec{X}), \vec{y}]$.
+
+This yields draws $(\sigma^{2(r)}, \vec{\mu}^{(r)})$ for $r = 1, \ldots, R$.
+Both conditionals have familiar forms. To find them, first let us write the
+joint distribution of all random variables in the model
+$[\vec{y}, \mu(\vec{X}), \sigma^2]$:
+
+$$
+\begin{align*}
+\pi(\vec{y}, \mu(\vec{X}), \sigma^2) =
+\text{N}(\vec{y} \mid \mu(\vec{X}), \sigma^2 \vec{I}) \cdot
+\text{N}(\mu(\vec{X}) \mid \vec{0}, k(\vec{X}, \vec{X})) \cdot
+\text{IG}(\sigma^2 \mid a_\sigma, b_\sigma).
+\end{align*}
+$$
+
+The conditional distribution $[\sigma^2 \mid \vec{y}, \mu(\vec{X})]$ is then
+
+$$
+\begin{align*}
+\pi(\sigma^2 \mid \vec{y}, \mu(\vec{X}))
+%
+&= \text{N}(\vec{y} \mid \mu(\vec{X}), \sigma^2 \vec{I}) \cdot
+\text{IG}(\sigma^2 \mid a_\sigma, b_\sigma) \\
+%
+&= (\sigma^2)^{-n/2} \exp\left\{ -\frac{1}{2 \sigma^2} \lVert \vec{y} - \mu(\vec{X}) \rVert^2 \right\}
+(\sigma^2)^{-a_\sigma - 1} \exp\{ -b_\sigma / \sigma^2 \} \\
+%
+&= (\sigma^2)^{-(a_\sigma + n/2) - 1} \exp\left\{
+-\frac{1}{\sigma^2} \left[ b_\sigma + \frac{1}{2} \lVert \vec{y} - \mu(\vec{X}) \rVert^2 \right]
+\right\} \\
+%
+&= \text{IG}(a_\sigma^*, b_\sigma^*),
+\end{align*}
+$$
+
+where $a_\sigma^* = a_\sigma + n/2$ and
+$b_\sigma^* = b_\sigma + \frac{1}{2} \lVert \vec{y} - \mu(\vec{X}) \rVert^2$.
+
+
+The conditional distribution $[\mu(\vec{X}) \mid \vec{y}, \sigma^2]$ is
+
+$$
+\begin{align*}
+&\pi(\mu(\vec{X}) \mid \vec{y}, \sigma^2) \\
+%
+&\quad= \text{N}(\vec{y} \mid \mu(\vec{X}), \sigma^2 \vec{I}) \cdot
+\text{N}(\mu(\vec{X}) \mid \vec{0}, k(\vec{X}, \vec{X})) \\
+%
+&\quad= \exp\left\{
+-\frac{1}{2 \sigma^2} [\vec{y} - \mu(\vec{X})]^\top [\vec{y} - \mu(\vec{X})]
+\right\}
+\exp\left\{
+-\frac{1}{2} \mu(\vec{X})^\top k(\vec{X}, \vec{X})^{-1} \mu(\vec{X})
+\right\} \\
+%
+&\quad\propto \exp\left\{
+-\frac{1}{2} \left[
+\mu(\vec{X})^\top 
+\underbrace{\left[ k(\vec{X}, \vec{X})^{-1} + \sigma^{-2} \vec{I} \right]}_{\vec{\Omega}}
+\mu(\vec{X})
+- 2 \sigma^{-2} \vec{y}^\top \mu(\vec{X}) 
+\right]
+\right\} \\
+%
+&\quad\propto \exp\left\{
+-\frac{1}{2} \left[
+\mu(\vec{X})^\top \vec{\Omega} \mu(\vec{X})
+- 2 \underbrace{\sigma^{-2} \vec{y}^\top \vec{\Omega}^{-1}}_{\vec{\vartheta}^\top} \vec{\Omega} \mu(\vec{X}) 
+\right]
+\right\} \\
+%
+&\quad\propto \exp\left\{
+-\frac{1}{2} 
+[\mu(\vec{X}) - \vec{\vartheta}]^\top \vec{\Omega} [\mu(\vec{X}) - \vec{\vartheta}]
+\right\} \\
+%
+&\quad\propto \text{N}(\mu(\vec{X}) \mid \vec{\vartheta}, \vec{\Omega}^{-1}).
+\end{align*}
+$$
+
+
+# Posterior Predictive Distribution
+
+Suppose there are $n_0$ (potentially new) inputs
+$\vec{X}_0 = (\vec{x}_{01} \; \cdots \; \vec{x}_{0 n_0})^\top$ for which we
+would like predictions. We can sample from the posterior predictive
+distribution by drawing $f(\vec{X}_0)$ from
+$[f(\vec{X}_0) \mid \vec{y}, \sigma^2]$ for each $\sigma^2 = \sigma^{2(r)}$.
+
+Starting from the distribution $[\vec{y}, f(\vec{X}_0) \mid \sigma^2]$ 
+
+$$
+\begin{bmatrix}
+\vec{y} \\
+f(\vec{X}_0)
+\end{bmatrix}
+\sim \text{N}\left(
+\begin{bmatrix}
+\vec{0} \\
+\vec{0}
+\end{bmatrix},
+\begin{bmatrix}
+k(\vec{X}, \vec{X}) + \sigma^2 \vec{I}   & k(\vec{X}, \vec{X}_0) \\
+k(\vec{X}_0, \vec{X})                    & k(\vec{X}_0, \vec{X}_0)
+\end{bmatrix}
+\right),
+$$
+
+The distribution $[f(\vec{X}_0) \mid \vec{y}, \sigma^2]$ is determined to be
+$\text{N}(\vec{\mu}_0, \vec{\Sigma}_0)$ with
+
+$$
+\begin{align*}
+&\vec{\mu}_0 = k(\vec{X}_0, \vec{X}) [k(\vec{X},\vec{X}) + \sigma^2 \vec{I}]^{-1} \vec{y}, \\
+&\vec{\Sigma}_0 = k(\vec{X}_0, \vec{X}_0) - k(\vec{X}_0,\vec{X}) [k(\vec{X}, \vec{X}) + \sigma^2 \vec{I}]^{-1} k(\vec{X}, \vec{X}_0).
+\end{align*}
+$$
+
+# Computation of Matrices
+
+We can simplify some of the computations using the spectral decomposition of
+$k(\vec{X},\vec{X})$ be $\vec{U} \vec{\Lambda} \vec{U}^\top$ and suppose
+$\vec{W} \sim \text{N}(\vec{\vartheta}, \vec{\Omega}^{-1})$.
+Then
+
+$$
+\vec{U}^\top \vec{W} \sim \text{N}(\vec{U}^\top \vec{\vartheta}, \vec{U}^\top \vec{\Omega}^{-1} \vec{U}).
+$$
+
+We have 
+
+$$
+\begin{align*}
+\vec{U}^\top \vec{\Omega}^{-1} \vec{U}
+&= \vec{U}^\top [k(\vec{X}, \vec{X})^{-1} + \sigma^{-2} \vec{I}]^{-1} \vec{U} \\
+&= \{ \vec{U}^\top [ k(\vec{X}, \vec{X})^{-1} + \sigma^{-2} \vec{I} ] \vec{U} \}^{-1} \\
+&= [ \vec{\Lambda}^{-1} + \sigma^{-2} \vec{I} ]^{-1} \\
+&= \Diag\left(\frac{1}{\lambda_1^{-1} + \sigma^{-2}}, \ldots, \frac{1}{\lambda_n^{-1} + \sigma^{-2}} \right)
+\end{align*}
+$$
+
+so that the components of $\vec{W}$ are independent. Furthermore,
+
+$$
+\begin{align*}
+\vec{U}^\top \vec{\vartheta}
+&= \sigma^{-2} \vec{U}^\top \vec{\Omega}^{-1} \vec{y} \\
+&= \sigma^{-2} \vec{U}^\top [k(\vec{X}, \vec{X})^{-1} + \sigma^{-2} \vec{I}]^{-1} \vec{y} \\
+&= \sigma^{-2} \vec{U}^\top [\vec{U} \vec{\Lambda}^{-1} \vec{U}^\top + \sigma^{-2} \vec{I}]^{-1} \vec{y} \\
+&= \sigma^{-2} [\vec{U} \vec{\Lambda}^{-1} + \sigma^{-2} \vec{U}]^{-1} \vec{y} \\
+&= \sigma^{-2} [\vec{\Lambda}^{-1} + \sigma^{-2} \vec{I}]^{-1} \underbrace{\vec{U}^\top \vec{y}}_{\vec{z}} \\
+&= \sigma^{-2}
+\Diag\left(\frac{1}{\lambda_1^{-1} + \sigma^{-2}}, \ldots, \frac{1}{\lambda_n^{-1} + \sigma^{-2}} \right)
+\vec{z} \\
+&= 
+\Diag\left(\frac{z_1}{1 + \sigma^2 / \lambda_1}, \ldots,
+\frac{z_n}{1 + \sigma^2 / \lambda_n} \right) \\
+\end{align*}
+$$
+
+Therefore, we can sample the components of $\vec{W}$ independently as
+
+$$W_i \sim \text{N}\left(
+\frac{z_i}{1 + \sigma^2 / \lambda_i}, \frac{1}{\lambda_n^{-1} + \sigma^{-2}}
+\right),
+$$
+
+then transform to $\vec{\mu} = \vec{U} \vec{W}$ to get a desired draw from
+$[\mu(\vec{X}) \mid \vec{y}, \sigma^2]$.
+
+We can also simplify computations involving the posterior predictive
+distribution. Let $\vec{K}_{21} = k(\vec{X}_0, \vec{X})$ and
+$\vec{K}_{22} = k(\vec{X}_0, \vec{X}_0)$. We have
+
+$$
+\begin{align*}
+\vec{\mu}_0
+&= \vec{K}_{21} [\vec{K}_{11} + \sigma^2 \vec{I}]^{-1} \vec{y} \\
+&= \vec{K}_{21} [\vec{U} \vec{\Lambda} \vec{U}^\top + \sigma^2 \vec{I}]^{-1} \vec{y} \\
+&= \vec{K}_{21} \vec{U} [\vec{\Lambda} + \sigma^2 \vec{I}]^{-1} \vec{U}^\top \vec{y} \\
+&= \vec{K}_{21} \vec{U} [\vec{\Lambda} + \sigma^2 \vec{I}]^{-1} \vec{z} \\
+&= \vec{K}_{21} \vec{U} \left[\frac{z_1}{\sigma^2 + \lambda_1} \; \cdots \;
+\frac{z_n}{\sigma^2 + \lambda_n} \right]^\top
+\end{align*}
+$$
+
+and
+
+$$
+\begin{align*}
+\vec{\Sigma}_0
+&= \vec{K}_{22} - \vec{K}_{21} [\vec{K}_{11} + \sigma^2 \vec{I}]^{-1} \vec{K}_{12} \\
+&= \vec{K}_{22} - \vec{K}_{21} \vec{U} [\vec{\Lambda} + \sigma^2 \vec{I}]^{-1} \vec{U}^\top \vec{K}_{12} \\
+&= \vec{K}_{22} - \vec{K}_{21} \vec{U} \Diag\left(\frac{1}{\lambda_1 + \sigma^2}, \ldots, \frac{1}{\lambda_n + \sigma^2} \right) \vec{U}^\top \vec{K}_{12}
+\end{align*}
+$$
+
+where $\vec{C} = \vec{K}_{21} \vec{U}$. When our interest is in a marginal from
+the posterior predictive distribution for input $\vec{x}_0$, these expressions
+become
+
+$$
+\begin{align*}
+&\mu_0
+= k(\vec{x}_0, \vec{X}) \vec{U} \left[\frac{z_1}{\sigma^2 + \lambda_1} \; \cdots \;
+\frac{z_n}{\sigma^2 + \lambda_n} \right]^\top, \\
+%
+&\sigma_0^2
+= k(\vec{x}_0, \vec{x}_0) - k(\vec{x}_0, \vec{X}) \vec{U} \Diag\left(\frac{1}{\lambda_1 + \sigma^2}, \ldots, \frac{1}{\lambda_n + \sigma^2} \right) \vec{U}^\top k(\vec{X}, \vec{x}_0).
+\end{align*}
+$$
